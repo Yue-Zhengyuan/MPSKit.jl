@@ -21,6 +21,7 @@ When releasing a new version, move the "Unreleased" changes to a new version sec
 
 ### Added
 
+- `momentum_correlator` and `structure_factor` for connected momentum-space correlations in an `InfiniteMPS`, including batched evaluation of momentum lists with reused environments and warm-started linear solves.
 - `ClusterExpansion` time-evolution algorithm for `make_time_mpo`, constructing evolution MPOs
   for finite and infinite nearest-neighbor Hamiltonians through a nonperturbative cluster expansion
   that matches exact exponentials on clusters of up to `N` sites. ([#252](https://github.com/QuantumKitHub/MPSKit.jl/pull/252))

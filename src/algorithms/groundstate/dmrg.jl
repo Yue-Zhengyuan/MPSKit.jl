@@ -124,14 +124,10 @@ function local_update!(
         ϵ_global, ϵ_trunc, decay_rate,
         iter, timeroutput, allocator
     )
-    ϵ_local = calc_galerkin(site, ψ, O, ψ, envs; alg.backend, allocator)
-
     # 1. expand
-    if !isnothing(alg.alg_expand)
-        @timeit timeroutput "expand" changebond!(
-            site, direction, ψ, O, alg.alg_expand, envs; allocator
-        )
-    end
+    ϵ_local = @timeit timeroutput "expand" galerkin_expand!(
+        site, direction, ψ, O, alg.alg_expand, envs; alg.backend, allocator
+    )
 
     # 2. local update
     alg_eigsolve = adapt_solver(alg.alg_eigsolve; decay_rate, g_local = ϵ_local, g_global = ϵ_global, eps_trunc = ϵ_trunc)
@@ -155,6 +151,31 @@ function local_update!(
     @debug "DMRG local update" site direction numops = info.numops normres = first(info.normres) krylovdim = alg_eigsolve.krylovdim maxiter = alg_eigsolve.maxiter tol = alg_eigsolve.tol decay_rate ϵ_local
 
     return ψ, ϵ_local, ϵ_trunc, decay_rate
+end
+
+"""
+    galerkin_expand!(site, direction, ψ, O, alg_expand, envs; backend, allocator) -> ϵ
+
+Return the Galerkin error at `site`, then expand the bond of `site` in `direction` with
+`alg_expand` (if any).
+"""
+function galerkin_expand!(site, direction, ψ, O, alg_expand, envs; backend, allocator)
+    # an expansion leaves the halves at `site` stale, so preparing them only pays off without one
+    prepare = isnothing(alg_expand)
+    ϵ = calc_galerkin(site, ψ, O, ψ, envs; prepare, backend, allocator)
+    isnothing(alg_expand) || changebond!(site, direction, ψ, O, alg_expand, envs; allocator)
+    return ϵ
+end
+# the single-site derivative is the two-site projection that the expansion forms anyway,
+# contracted with the isometry on the other site of the bond
+function galerkin_expand!(site, direction, ψ, O, alg_expand::OptimalExpand, envs; backend, allocator)
+    bond = direction === Val(:right) ? site : site - 1
+    AC2 = AC2_projection(bond, ψ, O, ψ, envs; alg_expand.backend, allocator)
+    AC´ = direction === Val(:right) ? AC2 * adjoint(_transpose_tail(ψ.AR[site + 1])) :
+        _transpose_front(adjoint(ψ.AL[site - 1]) * AC2)
+    ϵ = norm(project_complement!(normalize!(AC´), ψ.AL[site]))
+    expand_from_projection!(site, direction, ψ, AC2, alg_expand)
+    return ϵ
 end
 
 """
@@ -243,20 +264,11 @@ function local_update!(
     return ψ, ϵ_local, ϵ_trunc, decay_rate
 end
 
-# Per-algorithm sweep geometry: single-site DMRG updates all `length(ψ)` sites (endpoints once,
-# interior twice), whereas two-site DMRG2 updates the `length(ψ) - 1` bonds. `_num_updates`
-# gives the number of per-update bookkeeping slots and `_sweep_ranges` the forward/backward
-# index ranges; everything else in the sweep is shared.
-_num_updates(::DMRG, ψ) = length(ψ)
-_num_updates(::DMRG2, ψ) = length(ψ) - 1
+sweep_sites(::DMRG) = 1
+sweep_sites(::DMRG2) = 2
 
-_sweep_ranges(::DMRG, ψ) = (1:(length(ψ) - 1), length(ψ):-1:2)
-_sweep_ranges(::DMRG2, ψ) = (1:(length(ψ) - 1), (length(ψ) - 2):-1:1)
-
-# per-bond truncation errors of the last cut from the per-update slots: single-site slot `pos`
-# holds the backward cut of bond `pos - 1`, which is the last one made there
-_bond_truncation_errors(::DMRG, ϵ_truncs) = ϵ_truncs[2:end]
-_bond_truncation_errors(::DMRG2, ϵ_truncs) = copy(ϵ_truncs)
+# single-site slot `pos` holds the backward cut of bond `pos - 1`, which is the last one made there
+bond_truncation_errors(alg, ϵ_truncs) = sweep_sites(alg) == 1 ? ϵ_truncs[2:end] : copy(ϵ_truncs)
 
 inner_alg_gauge(alg::Union{DMRG, DMRG2}) = alg_gauge(alg.alg_gauge)
 
@@ -295,78 +307,93 @@ function find_groundstate!(
     return find_groundstate_sweep!(ψ, H, alg, envs, allocator, timeroutput)
 end
 
+struct DMRGState{S, O, E, R, V, D, T, A}
+    mps::S
+    operator::O
+    envs::E
+    iter::Int
+    ϵ::R
+    local_errors::V
+    truncation_errors::V
+    decay_rates::D
+    timeroutput::T
+    allocator::A
+end
+
+function DMRGState(ψ, H, alg::Union{DMRG, DMRG2}, envs, allocator, timeroutput)
+    Tr = real(scalartype(ψ))
+    n = num_updates(alg, ψ)
+    local_errors = ones(Tr, n)
+    return DMRGState(
+        ψ, H, envs, 0, maximum(local_errors), local_errors, zeros(Tr, n),
+        zeros(n), timeroutput, allocator,
+    )
+end
+
+function sweep!(it::IterativeSolver{<:Union{DMRG, DMRG2}}, state::DMRGState, direction, iter)
+    fwd, bwd = sweep_ranges(it.alg, state.mps)
+    sites = direction === Val(:right) ? fwd : bwd
+    ψ, ϵ = state.mps, state.ϵ
+    for pos in sites
+        ψ, state.local_errors[pos], state.truncation_errors[pos], state.decay_rates[pos] =
+            local_update!(
+            pos, direction, ψ, state.operator, it.alg, state.envs,
+            ϵ, state.truncation_errors[pos], state.decay_rates[pos],
+            iter, state.timeroutput, state.allocator,
+        )
+        # The next local solver uses the errors accumulated so far in this sweep.
+        ϵ = maximum(state.local_errors)
+    end
+    return setproperties(state; mps = ψ, ϵ)
+end
+
+function Base.iterate(it::IterativeSolver{<:Union{DMRG, DMRG2}}, state::DMRGState)
+    iter = state.iter + 1
+    timeroutput = state.timeroutput
+    state = @timeit timeroutput "sweep" begin
+        state = sweep!(it, state, Val(:right), iter)
+        sweep!(it, state, Val(:left), iter)
+    end
+    ψ, envs = @timeit timeroutput "finalize" it.finalize(
+        iter, state.mps, state.operator, state.envs
+    )::Tuple{typeof(state.mps), typeof(state.envs)}
+    it.state = setproperties(state; mps = ψ, envs, iter)
+    return (ψ, envs, state.ϵ), it.state
+end
+
+# Truncation sets the attainable floor of the Galerkin error.
+sweep_converged(alg, state::DMRGState) =
+    state.ϵ <= max(alg.tol, maximum(state.truncation_errors))
+
 function find_groundstate_sweep!(
         ψ::AbstractFiniteMPS, H, alg::Union{DMRG, DMRG2}, envs, allocator, timeroutput
     )
-    name = string(nameof(typeof(alg)))
-    log = IterLog(name)
-
-    Tr = real(scalartype(ψ))
-    n = _num_updates(alg, ψ)
-    ϵ_locals = ones(Tr, n)      # local Galerkin errors (drive both the eigensolver tol and the stop test)
-    ϵ_global = maximum(ϵ_locals) # sweep-wide Galerkin error, the convergence measure
-    ϵ_truncs = zeros(Tr, n)     # local truncation error
-    decay_rates = zeros(n)      # local observed decay rate of eigensolver
-    fwd, bwd = _sweep_ranges(alg, ψ)
-    iter = 0
+    log = IterLog(alg)
+    it = IterativeSolver(alg, DMRGState(ψ, H, alg, envs, allocator, timeroutput))
 
     with_verbosity(; alg.verbosity) do
-        @log_initialization loginit!(log, ϵ_global, expectation_value(ψ, H, envs))
-        for outer iter in 1:(alg.maxiter)
-            @timeit timeroutput "sweep" begin
-                # left-to-right
-                for pos in fwd
-                    ψ, ϵ_locals[pos], ϵ_truncs[pos], decay_rates[pos] =
-                        local_update!(
-                        pos, Val(:right),
-                        ψ, H, alg, envs,
-                        ϵ_global, ϵ_truncs[pos], decay_rates[pos],
-                        iter, timeroutput, allocator
-                    )
-                    ϵ_global = maximum(ϵ_locals)
-                end
-
-                # right-to-left
-                for pos in bwd
-                    ψ, ϵ_locals[pos], ϵ_truncs[pos], decay_rates[pos] =
-                        local_update!(
-                        pos, Val(:left),
-                        ψ, H, alg, envs,
-                        ϵ_global, ϵ_truncs[pos], decay_rates[pos],
-                        iter, timeroutput, allocator
-                    )
-                    ϵ_global = maximum(ϵ_locals)
-                end
-            end
-            ϵ_global = maximum(ϵ_locals)
-
-            ψ, envs = @timeit timeroutput "finalize" alg.finalize(
-                iter, ψ, H, envs
-            )::Tuple{typeof(ψ), typeof(envs)}
-
-            # Truncation-aware convergence: the Galerkin gradient cannot drop below the level set by
-            # the discarded weight, so a truncating scheme converges once `ϵ_global` reaches the
-            # truncation error rather than the (unreachable) bare `tol`. With no truncation
-            # (`ϵ_truncs .= 0`, e.g. single-site/QR gauge) this reduces to the plain `ϵ_global ≤ tol`.
-            if ϵ_global <= max(alg.tol, maximum(ϵ_truncs))
+        @log_initialization loginit!(log, it.ϵ, expectation_value(ψ, H, envs))
+        for (ψ, envs, ϵ) in Iterators.take(it, alg.maxiter)
+            if sweep_converged(alg, it.state)
                 @info TimerReport(timeroutput) _group = :mpskit_timing
-                @log_convergence logfinish!(log, iter, ϵ_global, expectation_value(ψ, H, envs))
+                @log_convergence logfinish!(log, it.iter, ϵ, expectation_value(ψ, H, envs))
                 break
-            end
-            if iter == alg.maxiter
+            elseif it.iter == alg.maxiter
                 @info TimerReport(timeroutput) _group = :mpskit_timing
-                @log_nonconvergence logcancel!(log, iter, ϵ_global, expectation_value(ψ, H, envs))
+                @log_nonconvergence logcancel!(log, it.iter, ϵ, expectation_value(ψ, H, envs))
             else
-                @log_iteration logiter!(log, iter, ϵ_global, expectation_value(ψ, H, envs))
+                @log_iteration logiter!(log, it.iter, ϵ, expectation_value(ψ, H, envs))
             end
         end
     end
 
+    state = it.state
     info = AlgorithmInfo(;
-        converged = ϵ_global <= max(alg.tol, maximum(ϵ_truncs)), galerkin = ϵ_global,
-        truncation_errors = _bond_truncation_errors(alg, ϵ_truncs), numiter = iter
+        converged = sweep_converged(alg, state), galerkin = state.ϵ,
+        truncation_errors = bond_truncation_errors(alg, state.truncation_errors),
+        numiter = state.iter,
     )
-    return ψ, envs, info
+    return state.mps, state.envs, info
 end
 
 function find_groundstate(ψ, H, alg::Union{DMRG, DMRG2}, envs...; kwargs...)

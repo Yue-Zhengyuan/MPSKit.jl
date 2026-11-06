@@ -8,52 +8,6 @@ abstract type DDMRG_Flavour end
 """
 $(TYPEDEF)
 
-A dynamical DMRG method for calculating dynamical properties and excited states, based on a
-variational principle for dynamical correlation functions.
-
-# Fields
-
-$(TYPEDFIELDS)
-
-# See also
-
-Used as the `algorithm` argument of [`propagator`](@ref).
-
-# References
-
-* [Jeckelmann. Phys. Rev. B 66 (2002)](@cite jeckelmann2002)
-"""
-@kwdef struct DynamicalDMRG{F <: DDMRG_Flavour, S, B} <: Algorithm
-    "flavour of the algorithm to use, either of type [`NaiveInvert`](@ref) or [`Jeckelmann`](@ref)"
-    flavour::F = NaiveInvert()
-    "algorithm used for the linear solvers"
-    solver::S = Defaults.linearsolver
-    "convergence tolerance on the largest change of a center tensor over a sweep"
-    tol::Float64 = Defaults.tol * 10
-    "maximal amount of iterations"
-    maxiter::Int = Defaults.maxiter
-    "setting for how much information is displayed"
-    verbosity::Int = Defaults.verbosity
-    "backend for tensor contractions and index manipulations"
-    backend::B = Defaults.backend()
-end
-
-"""
-    propagator(ψ₀::AbstractFiniteMPS, z::Number, H::MPOHamiltonian, alg::DynamicalDMRG; init = copy(ψ₀)) -> (g, ψ)
-
-Calculate the action of the propagator ``\\frac{1}{z - H}|ψ₀⟩`` using the dynamical DMRG
-algorithm.
-
-# Returns
-
-- `g`: approximation of the propagator matrix element ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩``
-- `ψ`: MPS approximation of ``\\frac{1}{z - H}|ψ₀⟩``
-"""
-function propagator end
-
-"""
-$(TYPEDEF)
-
 An alternative approach to the dynamical DMRG algorithm, without quadratic terms but with a
 less controlled approximation.
 This algorithm minimizes the following cost function
@@ -69,51 +23,6 @@ Returns the approximation of ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩`` and ``\\frac
 """
 struct NaiveInvert <: DDMRG_Flavour end
 
-function propagator(
-        A::AbstractFiniteMPS, z::Number, H,
-        alg::DynamicalDMRG{NaiveInvert}; init = copy(A)
-    )
-    allocator = default_allocator(A, SerialScheduler())
-    h_envs = environments(init, H, init) # environments for h
-    mixedenvs = environments(init, A) # environments for <init | A>
-
-    ϵ = 2 * alg.tol
-    log = IterLog("DDMRG")
-
-    with_verbosity(; alg.verbosity) do
-        @log_initialization loginit!(log, ϵ)
-        for iter in 1:(alg.maxiter)
-            ϵ = 0.0
-
-            for i in [1:(length(A) - 1); length(A):-1:2]
-                tos = AC_projection(i, init, A, mixedenvs; alg.backend, allocator)
-
-                H_AC = AC_hamiltonian(i, init, H, init, h_envs; alg.backend, allocator)
-                AC = init.AC[i]
-                AC′, convhist = linsolve(H_AC, -tos, AC, alg.solver, -z, one(z))
-
-                ϵ = max(ϵ, norm(AC′ - AC))
-                init.AC[i] = AC′
-
-                convhist.converged == 0 &&
-                    @warn "propagator ($i) failed to converge: normres = $(convhist.normres)"
-            end
-
-            if ϵ <= alg.tol
-                @log_convergence logfinish!(log, iter, ϵ)
-                break
-            end
-            if iter == alg.maxiter
-                @log_nonconvergence logcancel!(log, iter, ϵ)
-            else
-                @log_iteration logiter!(log, iter, ϵ)
-            end
-        end
-    end
-
-    return dot(A, init), init
-end
-
 """
 $(TYPEDEF)
 
@@ -127,10 +36,12 @@ which attains its minimum at
 ((ω - H)^2 + η^2)|ψ⟩ = -η|ψ₀⟩
 ```
 
-Together with equation (11) from that same paper we can determine the full propagator
-``\\frac{1}{z - H}|ψ₀⟩``.
+The solution of that equation is the imaginary part of the propagator; together with equation (11)
+from that same paper it determines the full ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩``. Because of that
+reconstruction step this flavour requires ``η = \\mathrm{Im}(z) ≠ 0``.
 
-Returns the approximation of ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩`` and ``\\frac{1}{z - H}|ψ₀⟩``.
+Returns the approximation of ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩`` and the minimizer ``|ψ⟩`` of the functional
+above (*not* ``\\frac{1}{z - H}|ψ₀⟩`` itself).
 
 # See also
 
@@ -142,62 +53,106 @@ Returns the approximation of ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩`` and ``\\frac
 """
 struct Jeckelmann <: DDMRG_Flavour end
 
-function propagator(
-        A::AbstractFiniteMPS, z::Number, H,
-        alg::DynamicalDMRG{Jeckelmann}; init = copy(A)
-    )
-    allocator = default_allocator(A, SerialScheduler())
-    ω = real(z)
+"""
+$(TYPEDEF)
+
+A dynamical DMRG method for calculating dynamical properties and excited states, based on a
+variational principle for dynamical correlation functions.
+
+This is a thin wrapper around [`linear_solve`](@ref): the sweep, the convergence criterion and the
+adaptive local tolerances are those of [`DMRGSolve`](@ref) / [`DMRGSolve2`](@ref).
+
+# Fields
+
+$(TYPEDFIELDS)
+
+# See also
+
+Used as the `algorithm` argument of [`propagator`](@ref).
+
+# References
+
+* [Jeckelmann. Phys. Rev. B 66 (2002)](@cite jeckelmann2002)
+"""
+@kwdef struct DynamicalDMRG{F <: DDMRG_Flavour, S, T, B} <: Algorithm
+    "flavour of the algorithm to use, either of type [`NaiveInvert`](@ref) or [`Jeckelmann`](@ref)"
+    flavour::F = NaiveInvert()
+    "local linear solver; a plain KrylovKit solver, or one wrapped in `DynamicTol` for per-bond adaptive tolerances (the default)"
+    solver::S = Defaults.alg_linsolve()
+    "tolerance for convergence criterium, measured as the relative residual of the linear system"
+    tol::Float64 = Defaults.tol
+    "maximal amount of iterations"
+    maxiter::Int = Defaults.maxiter
+    "setting for how much information is displayed"
+    verbosity::Int = Defaults.verbosity
+    "if supplied, a truncated two-site sweep ([`DMRGSolve2`](@ref)) is prepended to adapt the bond dimension"
+    trunc::T = nothing
+    "backend for tensor contractions and index manipulations"
+    backend::B = Defaults.backend()
+end
+
+# `Jeckelmann` solves `((ω - H)² + η²)·x = -η|ψ₀⟩`, rescaled by `-1/η` so that `b = |ψ₀⟩`
+propagator_shift(::NaiveInvert, z) = (z, -one(z))
+function propagator_shift(::Jeckelmann, z)
     η = imag(z)
+    iszero(η) && throw(
+        ArgumentError(
+            "`Jeckelmann` requires `imag(z) != 0`; use `NaiveInvert` flavour for real `z`"
+        )
+    )
+    return (-abs2(z) / η, -inv(η))
+end
 
-    envs1 = environments(init, H, init) # environments for h
-    H2, envs2 = squaredenvs(init, H, envs1) # environments for h^2
-    mixedenvs = environments(init, A) # environments for <init | A>
+propagator_operator(::NaiveInvert, H, x, envs, z) = (H, envs)
+function propagator_operator(::Jeckelmann, H, x, envs, z)
+    H², envs² = squaredenvs(x, H, envs)
+    A = LinearCombination((H², H), (one(real(z)), -2 * real(z)))
+    return A, LazyLincoCache(A, (envs², envs))
+end
 
-    ϵ = 2 * alg.tol
-    log = IterLog("DDMRG")
-
-    with_verbosity(; alg.verbosity) do
-        @log_initialization loginit!(log, ϵ)
-        for iter in 1:(alg.maxiter)
-            ϵ = 0.0
-
-            for i in [1:(length(A) - 1); length(A):-1:2]
-                tos = AC_projection(i, init, A, mixedenvs; alg.backend, allocator)
-                H1_AC = AC_hamiltonian(i, init, H, init, envs1; alg.backend, allocator)
-                H2_AC = AC_hamiltonian(i, init, H2, init, envs2; alg.backend, allocator)
-                H_AC = LinearCombination((H1_AC, H2_AC), (-2 * ω, 1))
-                AC′, convhist = linsolve(H_AC, -η * tos, init.AC[i], alg.solver, abs2(z), 1)
-
-                ϵ = max(ϵ, norm(AC′ - init.AC[i]))
-                init.AC[i] = AC′
-
-                convhist.converged == 0 &&
-                    @warn "propagator ($i) failed to converge: normres $(convhist.normres)"
-            end
-
-            if ϵ <= alg.tol
-                @log_convergence logfinish!(log, iter, ϵ)
-                break
-            end
-            if iter == alg.maxiter
-                @log_nonconvergence logcancel!(log, iter, ϵ)
-            else
-                @log_iteration logiter!(log, iter, ϵ)
-            end
-        end
-    end
-
-    a = dot(AC_projection(1, init, A, mixedenvs; alg.backend, allocator), init.AC[1])
-    cb = leftenv(envs1, 1, A) * TransferMatrix(init.AL, H[1:length(A.AL)], A.AL)
+# `G(z)` from the solution vector
+propagator_value(::NaiveInvert, x, ψ₀, z, H, envs) = dot(ψ₀, x)
+function propagator_value(::Jeckelmann, x, ψ₀, z, H, envs)
+    ω, η = real(z), imag(z)
+    # equation (11) of Jeckelmann2002: the real part of `G(z)` follows from ⟨ψ₀|H|x⟩
+    a = dot(ψ₀, x)
+    cb = leftenv(envs, 1, ψ₀) * TransferMatrix(x.AL, H[1:length(ψ₀.AL)], ψ₀.AL)
     b = zero(a)
     for i in 1:length(cb)
-        b += @plansor cb[i][1 2; 3] * init.C[end][3; 4] *
-            rightenv(envs1, length(A), A)[i][4 2; 5] * conj(A.C[end][1; 5])
+        b += @plansor cb[i][1 2; 3] * x.C[end][3; 4] *
+            rightenv(envs, length(ψ₀), ψ₀)[i][4 2; 5] * conj(ψ₀.C[end][1; 5])
     end
+    return b / η - ω / η * a + 1im * a
+end
 
-    v = b / η - ω / η * a + 1im * a
-    return v, init
+"""
+    propagator(ψ₀::AbstractFiniteMPS, z::Number, H, alg::DynamicalDMRG; init = ψ₀) -> (g, ψ)
+
+Calculate the action of the propagator ``\\frac{1}{z - H}|ψ₀⟩`` using the dynamical DMRG
+algorithm.
+
+# Returns
+
+- `g`: approximation of the propagator matrix element ``⟨ψ₀|\\frac{1}{z - H}|ψ₀⟩``
+- `ψ`: for [`NaiveInvert`](@ref), the MPS approximation of ``\\frac{1}{z - H}|ψ₀⟩``; for
+  [`Jeckelmann`](@ref), the vector its functional optimizes,
+  ``-η[(ω - H)^2 + η^2]^{-1}|ψ₀⟩``, i.e. the imaginary part of the propagator, from which `g` is
+  reconstructed.
+
+`init` is used as the initial guess and is left untouched. The underlying variational problem is
+solved with [`linear_solve`](@ref); for full control over the sweep, call that directly, e.g.
+`linear_solve(ψ₀, H, ψ₀; a₀ = z, a₁ = -1)` for the [`NaiveInvert`](@ref) flavour.
+"""
+function propagator(
+        ψ₀::AbstractFiniteMPS, z::Number, H, alg::DynamicalDMRG; init = ψ₀
+    )
+    a₀, a₁ = propagator_shift(alg.flavour, z)
+    x = promote_to_shift(copy(init), a₀, a₁)
+    envs = environments(x, H, x)
+    A, Aenvs = propagator_operator(alg.flavour, H, x, envs, z)
+    sweep = linear_solve_algorithm(; alg.solver, alg.tol, alg.maxiter, alg.verbosity, alg.trunc, alg.backend)
+    x, = linear_solve!(x, A, ψ₀, sweep, Aenvs; a₀, a₁)
+    return propagator_value(alg.flavour, x, ψ₀, z, H, envs), x
 end
 
 function squaredenvs(

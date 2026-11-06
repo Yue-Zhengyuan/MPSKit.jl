@@ -17,14 +17,11 @@ When making changes to this project, please update the "Unreleased" section with
 
 When releasing a new version, move the "Unreleased" changes to a new version section with the release date.
 
-## [Unreleased](https://github.com/QuantumKitHub/MPSKit.jl/compare/v0.14.0...HEAD)
+## [Unreleased](https://github.com/QuantumKitHub/MPSKit.jl/compare/v0.14.1...HEAD)
 
 ### Added
 
 - `momentum_correlator` and `structure_factor` for connected momentum-space correlations in an `InfiniteMPS`, including batched evaluation of momentum lists with reused environments and warm-started linear solves.
-- `ClusterExpansion` time-evolution algorithm for `make_time_mpo`, constructing evolution MPOs
-  for finite and infinite nearest-neighbor Hamiltonians through a nonperturbative cluster expansion
-  that matches exact exponentials on clusters of up to `N` sites. ([#252](https://github.com/QuantumKitHub/MPSKit.jl/pull/252))
 
 ### Changed
 
@@ -34,9 +31,66 @@ When releasing a new version, move the "Unreleased" changes to a new version sec
 
 ### Fixed
 
+### Performance
+
+## [0.14.1](https://github.com/QuantumKitHub/MPSKit.jl/compare/v0.14.0...v0.14.1) - 2026-11-02
+
+### Added
+
+- `ClusterExpansion` time-evolution algorithm for `make_time_mpo`, constructing evolution MPOs
+  for finite and infinite nearest-neighbor Hamiltonians through a nonperturbative cluster expansion
+  that matches exact exponentials on clusters of up to `N` sites. ([#252](https://github.com/QuantumKitHub/MPSKit.jl/pull/252))
+- In-place `timestep!` for an `InfiniteMPS` with `TDVP`, which also enables `time_evolve!` on
+  infinite states. ([#537](https://github.com/QuantumKitHub/MPSKit.jl/pull/537))
+- `changebonds(::InfiniteMPOHamiltonian, ::SvdCut)` compresses infinite Hamiltonians with the
+  almost-Schmidt decomposition of [Parker et al.](https://arxiv.org/abs/1909.06341), and
+  `left_canonicalize!`/`right_canonicalize!` bring an `InfiniteMPOHamiltonian` into canonical form. ([#539](https://github.com/QuantumKitHub/MPSKit.jl/pull/539))
+- `linear_solve`/`linear_solve!` for solving `(a₀ + a₁·A)·x = b` with finite MPS `x` and `b`, using the
+  DMRG-style sweeps `DMRGSolve` and `DMRGSolve2`; see [`linear_solve`](@ref) for details. ([#479](https://github.com/QuantumKitHub/MPSKit.jl/pull/479))
+- `DynamicalDMRG` gained a `trunc` field for a bond-adaptive `propagator`; see [`DynamicalDMRG`](@ref). ([#479](https://github.com/QuantumKitHub/MPSKit.jl/pull/479))
+
+### Changed
+
+- `left_canonicalize!`/`right_canonicalize!(::FiniteMPOHamiltonian)` now sweep over the whole chain
+  instead of a single site, and return the gauge transformations alongside the operator, matching
+  the infinite versions. ([#539](https://github.com/QuantumKitHub/MPSKit.jl/pull/539))
+- Internal: the finite `DMRG`/`DMRG2` ground-state search and approximation, `DynamicalDMRG`,
+  multiline `IDMRG`/`IDMRG2` approximation and `leading_boundary`, and `time_evolve` now run as
+  iterators whose iterations are a forward and a backward half-sweep (or a single time step),
+  sharing one structure across solvers. Finite `TDVP`, `TDVP2` and `BUG` steps share a single sweep
+  over per-site local updates, and infinite `TDVP` steps are split into local update, gauge and
+  environment steps on the same step state. Results and logging are unchanged. ([#537](https://github.com/QuantumKitHub/MPSKit.jl/pull/537))
+- `time_evolve` with finite `TDVP`, `TDVP2` or `BUG`, or infinite `TDVP`, copies (or promotes to
+  complex) the initial state once and then takes every step in place, reusing one step state and
+  its allocator across steps, rather than copying the state at every step. A `finalize` callback
+  that keeps the state of an earlier step therefore sees it updated by later steps, as with
+  `time_evolve!`. ([#537](https://github.com/QuantumKitHub/MPSKit.jl/pull/537))
+- `propagator`/`DynamicalDMRG` are now implemented on top of `linear_solve`, which changes the default
+  convergence criterion, `tol` and local solver. ([#479](https://github.com/QuantumKitHub/MPSKit.jl/pull/479))
+- `VOMPS` computes the `AC` and `C` projections of a site with `tforeach`, so they follow the chosen
+  scheduler instead of always spawning tasks. ([#542](https://github.com/QuantumKitHub/MPSKit.jl/pull/542))
+
+### Fixed
+
 - `convert(TensorMap, H)` for single-site `FiniteMPOHamiltonian`s no longer contracts the site tensor with itself. ([#252](https://github.com/QuantumKitHub/MPSKit.jl/pull/252))
+- `show` methods for finite MPS/MPOs no longer check unit space condition through `oneunit`, which is not defined for multifusion spaces. ([#538](https://github.com/QuantumKitHub/MPSKit.jl/pull/538))
+- The canonical forms of `MPOHamiltonian`s, and therefore `SvdCut` compression, are now correct when
+  interactions contain identity components or redundant channels. ([#539](https://github.com/QuantumKitHub/MPSKit.jl/pull/539))
+- `InfiniteMPS(C, AR)` no longer throws a `MethodError`, which also fixes infinite `TDVP` with
+  `leftorthflag = false`. ([#537](https://github.com/QuantumKitHub/MPSKit.jl/pull/537))
+- Real-time infinite `TDVP` from a real `InfiniteMPS` with a real Hamiltonian no longer fails with
+  an `InexactError`: the environments are now rebuilt for the complex state, as for finite MPS.
+  ([#537](https://github.com/QuantumKitHub/MPSKit.jl/pull/537))
+- `TDVP`, `TDVP2` and `BUG` promote a real state to complex for imaginary-time evolution with a
+  complex time step, rather than failing. ([#537](https://github.com/QuantumKitHub/MPSKit.jl/pull/537))
+- `DynamicalDMRG` with the `Jeckelmann` flavour throws an `ArgumentError` for real `z` instead of
+  returning `-Inf`. ([#479](https://github.com/QuantumKitHub/MPSKit.jl/pull/479))
 
 ### Performance
+
+- Finite `DMRG`, `DMRG2` and other finite sweeps cache the prepared halves of the effective
+  Hamiltonians in `FiniteEnvironments`, reusing them across local updates and for the DMRG Galerkin
+  error. ([#546](https://github.com/QuantumKitHub/MPSKit.jl/pull/546))
 
 ## [0.14.0](https://github.com/QuantumKitHub/MPSKit.jl/compare/v0.13.13...v0.14.0) - 2026-10-05
 
@@ -77,6 +131,9 @@ When releasing a new version, move the "Unreleased" changes to a new version sec
   `expectation_value(::InfiniteMPS, ::InfiniteMPO)` forwards here. ([#508](https://github.com/QuantumKitHub/MPSKit.jl/pull/508))
 - `InfiniteMultilineMPS`/`FiniteMultilineMPS` and `InfiniteMultilineMPO`/`FiniteMultilineMPO`
   aliases for multiline objects with infinite or finite lines. ([#508](https://github.com/QuantumKitHub/MPSKit.jl/pull/508))
+- Makie.jl plotting functions `entanglement_plot` and `transfer_plot`, and their mutating
+  counterparts `entanglement_plot!` and `transfer_plot!`, through a new `MPSKitMakieExt` package
+  extension that is loaded with any Makie backend (e.g. `using CairoMakie`). ([#428](https://github.com/QuantumKitHub/MPSKit.jl/pull/428))
 
 ### Changed
 
@@ -148,6 +205,10 @@ When releasing a new version, move the "Unreleased" changes to a new version sec
 ### Deprecated
 
 - `DynamicTols.updatetol(alg, iter, ϵ)`; use `DynamicTols.adapt_solver(alg; iter, g_global = ϵ)` instead. ([#455](https://github.com/QuantumKitHub/MPSKit.jl/pull/455))
+- The Plots.jl recipes `entanglementplot` and `transferplot`, in favor of the Makie.jl based
+  `entanglement_plot` and `transfer_plot`. RecipesBase is now a weak dependency, so these are
+  only available once Plots.jl is loaded. ([#428](https://github.com/QuantumKitHub/MPSKit.jl/pull/428))
+
 ### Removed
 
 - The custom `MPSTensor` constructors; construct `TensorMap`s with explicit `TensorMapSpace`s instead. ([#475](https://github.com/QuantumKitHub/MPSKit.jl/pull/475))
@@ -180,6 +241,8 @@ When releasing a new version, move the "Unreleased" changes to a new version sec
   matching tensors of a line, and accepts any row due to periodicity.
   `checkbounds(Bool, ::PeriodicArray, I...)` now also accepts any index, matching `getindex`. ([#508](https://github.com/QuantumKitHub/MPSKit.jl/pull/508))
 - `size`/`axes` for a `CView` over a `Multiline` with finite lines were missing. ([#508](https://github.com/QuantumKitHub/MPSKit.jl/pull/508))
+- `transferplot` shifted the angles the wrong way for a nonzero `thetaorigin`, moving eigenvalues
+  outside the plotted range. ([#428](https://github.com/QuantumKitHub/MPSKit.jl/pull/428))
 - `excitations(::InfiniteMPO, ::QuasiparticleAnsatz, ::InfiniteQP, lenvs, renvs)` referenced `H_eff`  before assigning. ([#489](https://github.com/QuantumKitHub/MPSKit.jl/pull/489))
 - `Base.:+`/`-` on `FiniteMPS` returned a wrong state for near-parallel operands carried by
   different tensor networks, e.g. `norm(E₀ * gs - H * gs)` coming out as `2 * norm(gs) * E₀`

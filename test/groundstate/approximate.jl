@@ -23,7 +23,7 @@ end
 function _random_mpo_mps(pspace, Dspace, L; elt = ComplexF64)
     Random.seed!(1357)
     Wspace = Dspace
-    Vspaces = [oneunit(Wspace); fill(Wspace, L - 1); oneunit(Wspace)]
+    Vspaces = [unitspace(Wspace); fill(Wspace, L - 1); unitspace(Wspace)]
     O = FiniteMPO(
         [rand(ComplexF64, Vspaces[i] ⊗ pspace ← pspace ⊗ Vspaces[i + 1]) for i in 1:L]
     )
@@ -132,6 +132,16 @@ end
         @test norm(O * ψ₁ - ψ₂) ≈ 0 atol = 0.001
     end
 
+    @testset "MPOHamiltonian * finitemps1 ≈ finitemps2" for alg in finite_algs
+        L = 6
+        Random.seed!(5)
+        H = long_range_ising(Float64; g = 2.0, L)
+        ϕ = FiniteMPS(randn, ComplexF64, L, ℂ^2, ℂ^2)
+        ψ, = approximate(FiniteMPS(randn, ComplexF64, L, ℂ^2, ℂ^8), (H, ϕ), alg)
+        Hϕ = FiniteMPO(H) * ϕ
+        @test abs(dot(ψ, Hϕ)) ≈ norm(ψ) * norm(Hϕ) rtol = 1.0e-8
+    end
+
     @testset "Finite MPO-MPS zip-up $(spacetype(pspace))" for (pspace, Dspace, _) in zipup_spacelist
         L = 6
 
@@ -211,7 +221,7 @@ end
         @test info.truncation_errors ≈ info_ref.truncation_errors
 
         # a destination with unrelated contents is overwritten entirely
-        dst = FiniteMPS(rand, ComplexF64, length(ψ), pspace, oneunit(Dspace) ⊕ Dspace ⊕ Dspace)
+        dst = FiniteMPS(rand, ComplexF64, length(ψ), pspace, unitspace(Dspace) ⊕ Dspace ⊕ Dspace)
         got, info = approximate!(dst, (O, ψ), alg)
         @test norm(ref - got) / norm(ref) < 1.0e-12
         @test info.truncation_errors ≈ info_ref.truncation_errors
@@ -248,8 +258,8 @@ end
     @testset "Zip-up with non-square MPO $(spacetype(pspace))" for (pspace, Dspace, _) in zipup_spacelist
         Random.seed!(1357)
         L = 4
-        pspace′ = pspace ⊕ oneunit(pspace) # output physical space, different from the input one
-        Vspaces = [oneunit(Dspace); fill(Dspace, L - 1); oneunit(Dspace)]
+        pspace′ = pspace ⊕ unitspace(pspace) # output physical space, different from the input one
+        Vspaces = [unitspace(Dspace); fill(Dspace, L - 1); unitspace(Dspace)]
         O = FiniteMPO(
             [rand(ComplexF64, Vspaces[i] ⊗ pspace′ ← pspace ⊗ Vspaces[i + 1]) for i in 1:L]
         )

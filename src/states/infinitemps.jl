@@ -159,11 +159,11 @@ function InfiniteMPS(
         kwargs...
     )
 end
-InfiniteMPS(T::Type, d::S, D::S; kwargs...) where {S <: Union{Int, <:IndexSpace}} = InfiniteMPS(T, [d], [D]; kwargs...)
-InfiniteMPS(d::S, D::S; kwargs...) where {S <: Union{Int, <:IndexSpace}} = InfiniteMPS([d], [D]; kwargs...)
+InfiniteMPS(T::Type, d::S, D::S; kwargs...) where {S <: Union{Int, IndexSpace}} = InfiniteMPS(T, [d], [D]; kwargs...)
+InfiniteMPS(d::S, D::S; kwargs...) where {S <: Union{Int, IndexSpace}} = InfiniteMPS([d], [D]; kwargs...)
 function InfiniteMPS(
         f, T::Type, d::S, D::S; kwargs...
-    ) where {S <: Union{Int, <:IndexSpace}}
+    ) where {S <: Union{Int, IndexSpace}}
     return InfiniteMPS(f, T, [d], [D]; kwargs...)
 end
 function InfiniteMPS(ds::AbstractVector{Int}, Ds::AbstractVector{Int}; kwargs...)
@@ -239,7 +239,7 @@ function InfiniteMPS(C₀::MPSBondTensor, AR::AbstractVector{<:GenericMPSTensor}
     # initialize tensor storage
     AC = similar.(AR)
     AL = similar.(AR)
-    T = TensorOperations.promote_contract(eltype(AR), eltype(C₀))
+    T = TensorOperations.promote_contract(scalartype(AR), scalartype(C₀))
     TC = TensorOperations.tensoradd_type(T, C₀, ((1,), (2,)), false)
     C = similar(AR, TC)
     ψ = InfiniteMPS{eltype(AL), TC}(AL, AR, C, AC)

@@ -130,23 +130,18 @@ See also [Time evolution accuracy](@ref).
 
 #### Nonperturbative cluster expansion
 
-[`ClusterExpansion`](@ref) constructs evolution MPOs for finite and infinite
-nearest-neighbor Hamiltonians by matching exact exponentials on clusters of up to
-`N` sites [vanhecke2021cluster](@cite). Unlike [`TaylorCluster`](@ref), `N` specifies
-the cluster size rather than a Taylor order. For nearest-neighbor interactions,
-the one-step error is `O(dt^N)`; a finite chain is matched up to roundoff when
-`N` reaches its length.
+[`ClusterExpansion`](@ref) constructs evolution MPOs for finite and infinite Hamiltonians by matching exact exponentials on clusters of up to `N` sites [vanhecke2021cluster](@cite).
+Unlike [`TaylorCluster`](@ref), `N` specifies the cluster size rather than a Taylor order.
+For nearest-neighbor interactions, the one-step error is `O(dt^N)`, a finite chain is matched up to roundoff when `N` reaches its length.
 
 ```julia
 U = make_time_mpo(H, dt, ClusterExpansion(; N = 3))
 ψ, envs, info = approximate(ψ, (U, ψ); trunc = truncrank(32))
 ```
 
-Matching small clusters to all orders can permit larger time steps and help grow
-the bond dimension from weakly entangled states. The construction costs more than
-the compact [`WII`](@ref) approximation, and increasing `N` requires exponentially
-larger cluster exponentials and MPO bonds. Check convergence by varying `dt` and
-`N`, as well as the MPS compression settings.
+Matching small clusters to all orders can permit larger time steps and help grow the bond dimension from weakly entangled states.
+The construction costs more than the compact [`WII`](@ref) approximation, and increasing `N` requires exponentially larger cluster exponentials and MPO bonds.
+Check convergence by varying `dt` and `N`, as well as the MPS compression settings.
 
 ## Excitations
 
@@ -449,6 +444,28 @@ state, by a new state.
 approximate
 ```
 
+## `linear_solve`
+
+Solving a linear system ``(a₀ + a₁ A) x = b`` for an MPS ``x``, with ``A`` an MPO and ``b`` an MPS.
+The shift ``a₀ + a₁ A`` follows the convention of `KrylovKit.linsolve` and is applied implicitly, so
+no shifted operator is ever formed.
+The sweeps are DMRG-like: [`DMRGSolve`](@ref) keeps the bond dimension of the initial guess fixed,
+while [`DMRGSolve2`](@ref) updates two sites at a time and is therefore rank-adaptive.
+Each is parameterized by how the local subproblem is posed — [`Galerkin`](@ref) solves the effective
+system directly, [`LeastSquares`](@ref) minimizes ``\|(a₀ + a₁ A) x - b\|²`` through the normal
+equations.
+
+The resolvent is the canonical application: ``\frac{1}{z - H}|ψ₀⟩`` is `linear_solve(ψ₀, H, ψ₀; a₀ = z, a₁ = -1)`.
+
+```@docs; canonical=false
+linear_solve
+linear_solve!
+DMRGSolve
+DMRGSolve2
+Galerkin
+LeastSquares
+```
+
 ## Varia
 
 What follows is a medley of lesser known (or used) algorithms and don't entirely fit under
@@ -456,9 +473,9 @@ one of the above categories.
 
 ### Dynamical DMRG
 
-Dynamical DMRG has been described in other papers and is a way to find the propagator. The
-basic idea is that to calculate ``G(z) = ⟨ V | (H-z)^{-1} | V ⟩ `` , one can variationally
-find ``(H-z) |W ⟩ = | V ⟩ `` and then the propagator simply equals ``G(z) = ⟨ V | W ⟩``.
+Dynamical DMRG has been described in other papers and is a way to find the propagator.
+The basic idea is that to calculate ``G(z) = ⟨ V | (H-z)^{-1} | V ⟩ `` , one can variationally find ``(H-z) |W ⟩ = | V ⟩ `` and then the propagator simply equals ``G(z) = ⟨ V | W ⟩``.
+This is a thin wrapper around [`linear_solve`](@ref), see there for the sweep, the convergence criterion and the local solver options.
 
 ```@docs; canonical=false
 propagator

@@ -43,6 +43,8 @@ export NoiseSchedule, FunctionalSchedule, ExponentialDecay, Warmup, DMRG3S
 export Zipup
 export propagator
 export DynamicalDMRG, NaiveInvert, Jeckelmann
+export linear_solve, linear_solve!
+export DMRGSolve, DMRGSolve2, Galerkin, LeastSquares
 export exact_diagonalization, fidelity_susceptibility
 
 # toolbox:
@@ -51,6 +53,7 @@ export correlation_length, marek_gap, transfer_spectrum
 export entropy, entanglement_spectrum
 export open_boundary_conditions, periodic_boundary_conditions
 export entanglementplot, transferplot
+export entanglement_plot, entanglement_plot!, transfer_plot, transfer_plot!
 export r_LL, l_LL, r_RR, l_RR, r_RL, r_LR, l_RL, l_LR # TODO: rename
 
 # unexported
@@ -78,7 +81,6 @@ using KrylovKit: KrylovAlgorithm
 using OptimKit
 using Base.Threads
 using Base.Iterators
-using RecipesBase
 using VectorInterface
 using Accessors
 using HalfIntegers
@@ -208,6 +210,9 @@ include("algorithms/approximate/idmrg.jl")
 include("algorithms/ED.jl")
 
 include("algorithms/unionalg.jl")
+
+include("algorithms/linear_solve/linear_solve.jl")
+include("algorithms/linear_solve/flinear_solve.jl")
 
 include("utility/show.jl")
 
